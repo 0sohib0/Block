@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Minimal Rhythm Game</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background-color: #F5F1E8;
+            font-family: 'Courier New', Courier, monospace;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            user-select: none;
+        }
+
+        /* حاوية اللعبة بالكامل */
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            background-color: #F5F1E8;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* واجهة البيانات (HUD) */
+        #hud {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 40px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: #000000;
+            background: rgba(245, 241, 232, 0.8);
+            padding: 10px 20px;
+            border: 1px solid #000000;
+            border-radius: 4px;
+            pointer-events: none;
+        }
+
+        /* شاشة البدء */
+        #start-screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #F5F1E8;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 10;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 20px;
+            color: #000000;
+        }
+
+        p {
+            font-size: 1rem;
+            margin-bottom: 30px;
+            color: #555;
+            text-align: center;
+            line-height: 1.6;
+        }
+
+        button {
+            padding: 12px 30px;
+            font-size: 1.2rem;
+            font-family: inherit;
+            background-color: #000000;
+            color: #F5F1E8;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        button:hover {
+            background-color: #333333;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <div id="start-screen">
+            <h1>LOCKED OUT OF HEAVEN</h1>
+            <p>التحكم: استخدام أزرار الكيبورد <br><strong>D , F</strong> للهدف الأيسر | <strong>J , K</strong> للهدف الأيمن</p>
+            <button id="start-btn">ابدأ اللعب</button>
+        </div>
+
+        <div id="hud">
+            <div>Accuracy: <span id="accuracy">100.00%</span></div>
+            <div>Misses: <span id="misses">0</span></div>
+            <div>Notes: <span id="notes-counter">0/0</span></div>
+        </div>
+
+        <canvas id="gameCanvas"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const startScreen = document.getElementById('start-screen');
+        const startBtn = document.getElementById('start-btn');
+
+        // عناصر الواجهة
+        const accuracyEl = document.getElementById('accuracy');
+        const missesEl = document.getElementById('misses');
+        const notesCounterEl = document.getElementById('notes-counter');
+
+        // إعدادات الشاشة والدقة
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // منطق وإعدادات اللعبة
+        const BPM = 160; 
+        const beatInterval = 60 / BPM; // الوقت بالثواني بين كل نبضة (0.375 ثانية)
+        let startTime = 0;
+        let isPlaying = false;
+
+        // إحصائيات اللعبة
+        let totalNotesCount = 0; 
+        let spawnedNotesCount = 0;
+        let hitsCount = 0;
+        let missesCount = 0;
+        let totalScorePossible = 0;
+        let currentScore = 0;
+
+        // المواقع (المركز والأهداف)
+        // النوتات تخرج من مركز الجزء العلوي، وتتجه إلى المربعين في منتصف الشاشة
+        let centerX, centerY, targetLeftX, targetRightX, targetsY;
+        const targetSize = 45; // حجم المربعات المستهدفة
+
+        function updatePositions() {
+            centerX = canvas.width / 2;
+            centerY = canvas.height * 0.2; // نقطة الانطلاق العلوية
+            targetsY = canvas.height * 0.6; // خط الأهداف في المنتصف العمودي تقريباً
+            targetLeftX = centerX - 80;    // الهدف الأيسر
+            targetRightX = centerX + 80;   // الهدف الأيمن
+        }
+        updatePositions();
+        window.addEventListener('resize', updatePositions);
+
+        // النوتات والتأثيرات
+        let notes = [];
+        let particles = []; // تأثير الوهج (Glow Trail) عند الضرب
+
+        // التحكم بالأزرار (4 أزرار: 2 للهدف الأيسر، 2 للهدف الأيمن)
+        const keys = {
+            'd': { target: 'left', pressed: false },
+            'f': { target: 'left', pressed: false },
+            'j': { target: 'right', pressed: false },
+            'k': { target: 'right', pressed: false }
+        };
+
+        // توليد النوتات مسبقاً بناءً على الـ BPM (خريطة مبسطة تحاكي الأغنية)
+        let noteTimings = [];
+        function generateChart() {
+            // توليد نوتات متتالية لمدة دقيقتين على الإيقاع
+            const duration = 120; // 120 ثانية
+            let currentTime = 2.0; // بدء النوتات بعد ثانيتين من الضغط
+            
+            while (currentTime < duration) {
+                // اختيار عشوائي للهدف (أيسر أو أيمن) لجعل اللعب ممتعاً
+                const target = Math.random() > 0.5 ? 'left' : 'right';
+                noteTimings.push({ time: currentTime, target: target, spawned: false });
+                
+                // تنويع المسافات بناءً على النبض (نصف نبضة أو نبضة كاملة)
+                const rand = Math.random();
+                if (rand > 0.7) {
+                    currentTime += beatInterval * 0.5;
+                } else if (rand > 0.4) {
+                    currentTime += beatInterval;
+                } else {
+                    currentTime += beatInterval * 2;
+                }
+            }
+            totalNotesCount = noteTimings.length;
+            updateHUD();
+        }
+
+        // بدء اللعبة عند الضغط على الزر
+        startBtn.addEventListener('click', () => {
+            startScreen.style.display = 'none';
+            generateChart();
+            startTime = performance.now();
+            isPlaying = true;
+            requestAnimationFrame(gameLoop);
+        });
+
+        // رصد الضغط على الأزرار
+        window.addEventListener('keydown', (e) => {
+            const key = e.key.toLowerCase();
+            if (keys[key] && !keys[key].pressed) {
+                keys[key].pressed = true;
+                checkHit(keys[key].target);
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            const key = e.key.toLowerCase();
+            if (keys[key]) {
+                keys[key].pressed = false;
+            }
+        });
+
+        // التحقق من الإصابة (Hit)
+        function checkHit(targetType) {
+            const hitWindow = 0.15; // نافذة القبول بالثواني (150 ملي ثانية)
+            const elapsedTime = (performance.now() - startTime) / 1000;
+
+            // البحث عن أقرب نوتة في نفس المسار ولم تضرب بعد
+            let noteHit = false;
+            for (let i = 0; i < notes.length; i++) {
+                let note = notes[i];
+                if (note.target === targetType && !note.hit) {
+                    let timeDiff = Math.abs(elapsedTime - note.targetTime);
+                    if (timeDiff <= hitWindow) {
+                        note.hit = true;
+                        hitsCount++;
+                        
+                        // حساب الدقة بناءً على القرب
+                        let accuracyMultiplier = 1 - (timeDiff / hitWindow); // 0 to 1
+                        currentScore += 100 * (0.5 + accuracyMultiplier * 0.5); 
+                        totalScorePossible += 100;
+
+                        // إنشاء تأثير الوهج
+                        createGlowEffect(targetType === 'left' ? targetLeftX : targetRightX, targetsY);
+                        noteHit = true;
+                        break;
+                    }
+                }
+            }
+            
+            if (!noteHit) {
+                // إذا ضغط اللاعب ولا توجد نوتة (تعتبر محاولة خاطئة وتقلل الدقة قليلاً)
+                totalScorePossible += 20; 
+            }
+            updateHUD();
+        }
+
+        // إنشاء جزيئات الوهج عند ضرب النوتة
+        function createGlowEffect(x, y) {
+            for (let i = 0; i < 15; i++) {
+                particles.push({
+                    x: x,
+                    y: y,
+                    vx: (Math.random() - 0.5) * 8,
+                    vy: (Math.random() - 0.5) * 8,
+                    radius: Math.random() * 4 + 2,
+                    alpha: 1,
+                    decay: Math.random() * 0.03 + 0.02
+                });
+            }
+        }
+
+        // تحديث واجهة العدادات
+        function updateHUD() {
+            let accuracy = 100;
+            if (totalScorePossible > 0) {
+                accuracy = (currentScore / totalScorePossible) * 100;
+            }
+            accuracyEl.textContent = accuracy.toFixed(2) + '%';
+            missesEl.textContent = missesCount;
+            notesCounterEl.textContent = `${hitsCount + missesCount}/${totalNotesCount}`;
+        }
+
+        // رسم قطرة الحبر (Teardrop)
+        function drawTeardrop(ctx, x, y, size, isLeft) {
+            ctx.save();
+            ctx.translate(x, y);
+            // تدوير القطرة لتشير باتجاه الحركة إلى الأسفل والجانبين قليلاً
+            let angle = isLeft ? Math.atan2(targetsY - centerY, targetLeftX - centerX) - Math.PI/2 
+                               : Math.atan2(targetsY - centerY, targetRightX - centerX) - Math.PI/2;
+            ctx.rotate(angle);
+            
+            ctx.beginPath();
+            ctx.moveTo(0, -size);
+            // رسم انحناء القطرة السفلي
+            ctx.bezierCurveTo(size, -size/2, size, size, 0, size);
+            ctx.bezierCurveTo(-size, size, -size, -size/2, 0, -size);
+            ctx.fillStyle = '#000000';
+            ctx.fill();
+            ctx.restore();
+        }
+
+        // حلقة اللعبة الأساسية (Game Loop)
+        function gameLoop() {
+            if (!isPlaying) return;
+
+            const elapsedTime = (performance.now() - startTime) / 1000;
+
+            // 1. إدارة ظهور النوتات (Spawn Logic)
+            const noteTravelTime = 1.2; // الوقت الذي تستغرقه النوتة لتصل للهدف (بالثواني)
+            noteTimings.forEach(nt => {
+                if (!nt.spawned && elapsedTime >= (nt.time - noteTravelTime)) {
+                    nt.spawned = true;
+                    spawnedNotesCount++;
+                    notes.push({
+                        spawnTime: elapsedTime,
+                        targetTime: nt.time,
+                        target: nt.target,
+                        hit: false,
+                        missed: false
+                    });
+                }
+            });
+
+            // تنظيف الشاشة بالخلفية البيج
+            ctx.fillStyle = '#F5F1E8';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // 2. رسم الخطوط الرفيعة المشعة من المركز العلوي
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.15)';
+            ctx.lineWidth = 1;
+            
+            // خطوط المسارات الأساسية للأهداف
+            ctx.beginPath();
+            ctx.moveTo(centerX, centerY); ctx.lineTo(targetLeftX, targetsY);
+            ctx.moveTo(centerX, centerY); ctx.lineTo(targetRightX, targetsY);
+            // خطوط ديكورية إضافية لتعزيز المظهر الشعاعي الهادئ
+            ctx.moveTo(centerX, centerY); ctx.lineTo(targetLeftX - 150, targetsY + 100);
+            ctx.moveTo(centerX, centerY); ctx.lineTo(targetRightX + 150, targetsY + 100);
+            ctx.stroke();
+
+            // 3. رسم المربعات المستهدفة (Hit Targets) في المنتصف
+            ctx.lineWidth = 1.5;
+            ctx.strokeStyle = '#000000';
+            
+            // تغيير لون التعبئة مؤقتاً عند الضغط على الأزرار لإعطاء إيحاء بصري بالضغط
+            let leftPressed = keys['d'].pressed || keys['f'].pressed;
+            let rightPressed = keys['j'].pressed || keys['k'].pressed;
+
+            // الهدف الأيسر
+            ctx.fillStyle = leftPressed ? 'rgba(0,0,0,0.1)' : 'transparent';
+            ctx.fillRect(targetLeftX - targetSize/2, targetsY - targetSize/2, targetSize, targetSize);
+            ctx.strokeRect(targetLeftX - targetSize/2, targetsY - targetSize/2, targetSize, targetSize);
+
+            // الهدف الأيمن
+            ctx.fillStyle = rightPressed ? 'rgba(0,0,0,0.1)' : 'transparent';
+            ctx.fillRect(targetRightX - targetSize/2, targetsY - targetSize/2, targetSize, targetSize);
+            ctx.strokeRect(targetRightX - targetSize/2, targetsY - targetSize/2, targetSize, targetSize);
+
+            // 4. تحديث ورسم النوتات
+            for (let i = notes.length - 1; i >= 0; i--) {
+                let note = notes[i];
+                
+                // حساب النسبة المئوية لتقدم النوتة من المركز إلى الهدف (0 إلى 1)
+                let progress = (elapsedTime - note.spawnTime) / noteTravelTime;
+                
+                // تحديد موقع النوتة الحالي بناءً على النسبة
+                let currentTargetX = note.target === 'left' ? targetLeftX : targetRightX;
+                let noteX = centerX + (currentTargetX - centerX) * progress;
+                let noteY = centerY + (targetsY - centerY) * progress;
+
+                // التحقق من تفاوت الوقت لتسجيل الـ Miss
+                if (!note.hit && !note.missed && elapsedTime > note.targetTime + 0.15) {
+                    note.missed = true;
+                    missesCount++;
+                    totalScorePossible += 100; // تم تفويتها بالكامل
+                    updateHUD();
+                }
+
+                // رسم النوتة إذا لم تُضرب بعد ومستمرة في الحركة
+                if (!note.hit && progress <= 1.2) {
+                    let size = 12 * progress + 4; // تكبر النوتة قليلاً كلما اقتربت
+                    drawTeardrop(ctx, noteX, noteY, size, note.target === 'left');
+                }
+
+                // حذف النوتات التي خرجت عن الشاشة تماماً
+                if (progress > 1.3) {
+                    notes.splice(i, 1);
+                }
+            }
+
+            // 5. تحديث ورسم جزيئات الوهج (Glow Trail Effect)
+            for (let i = particles.length - 1; i >= 0; i--) {
+                let p = particles[i];
+                p.x += p.vx;
+                p.y += p.vy;
+                p.alpha -= p.decay;
+
+                if (p.alpha <= 0) {
+                    particles.splice(i, 1);
+                } else {
+                    ctx.save();
+                    ctx.globalAlpha = p.alpha;
+                    ctx.fillStyle = '#000000'; // الوهج يتبع الهوية الميMinimalist السوداء
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.restore();
+                }
+            }
+
+            requestAnimationFrame(gameLoop);
+        }
+    </script>
+</body>
+</html>
